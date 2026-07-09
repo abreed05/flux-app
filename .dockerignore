@@ -1,0 +1,8 @@
+node_modules
+outputs
+.env
+.git
+.claude
+Dockerfile
+docker-compose.yml
+README.md

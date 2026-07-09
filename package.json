@@ -1,0 +1,18 @@
+{
+  "name": "flux-app",
+  "version": "2.0.0",
+  "description": "Web GUI for generating images with the Black Forest Labs FLUX.2 API — RabbitMQ-backed concurrent runs",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "worker": "node worker.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

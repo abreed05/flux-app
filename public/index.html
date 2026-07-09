@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FLUX Image Studio</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>⚡ FLUX Image Studio</h1>
+    <span class="subtitle">Black Forest Labs · FLUX.2 API</span>
+    <span id="credits" class="credits" title="Remaining BFL account balance">credits: —</span>
+  </header>
+
+  <main class="layout">
+    <!-- ---------------- Controls ---------------- -->
+    <section class="panel controls">
+      <label class="field">
+        <span>Model</span>
+        <select id="model"></select>
+      </label>
+
+      <label class="field">
+        <span>Prompt</span>
+        <textarea id="prompt" rows="4" placeholder="A cinematic photo of a fox in a snowy forest, golden hour…"></textarea>
+      </label>
+
+      <label class="field">
+        <span>Negative prompt <em>(things to avoid)</em></span>
+        <textarea id="negative_prompt" rows="2" placeholder="blurry, extra fingers, watermark…"></textarea>
+      </label>
+
+      <!-- image-to-image (up to 8 references) -->
+      <div class="field">
+        <span>Reference images <em>(optional, up to 8)</em></span>
+        <div class="i2i">
+          <input type="file" id="input_image" accept="image/*" multiple />
+        </div>
+        <div id="i2iThumbs" class="i2i-thumbs"></div>
+        <p id="i2iHint" class="hint" hidden>
+          Refer to them by number in the prompt, e.g. <strong>“the subject from image 1
+          in the environment from image 2”</strong>.
+        </p>
+      </div>
+
+      <div class="grid2">
+        <label class="field">
+          <span>Size</span>
+          <select id="size">
+            <option value="1024x1024">Square · 1024×1024</option>
+            <option value="1344x768">Landscape · 1344×768</option>
+            <option value="768x1344">Portrait · 768×1344</option>
+            <option value="1440x810">Wide 16:9 · 1440×810</option>
+            <option value="1152x896">4:3 · 1152×896</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Output format</span>
+          <select id="output_format">
+            <option value="png">PNG</option>
+            <option value="jpeg">JPEG</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="grid2" id="customSize" hidden>
+        <label class="field"><span>Width</span><input type="number" id="width" min="256" max="4096" step="16" value="1024" /></label>
+        <label class="field"><span>Height</span><input type="number" id="height" min="256" max="4096" step="16" value="1024" /></label>
+      </div>
+
+      <!-- guidance / steps (flex & klein only) -->
+      <label class="field slider" data-param="guidance">
+        <span>Guidance scale <output id="guidanceOut">2.5</output></span>
+        <input type="range" id="guidance" min="1" max="10" step="0.1" value="2.5" />
+      </label>
+
+      <label class="field slider" data-param="steps">
+        <span>Steps <output id="stepsOut">28</output></span>
+        <input type="range" id="steps" min="1" max="50" step="1" value="28" />
+      </label>
+
+      <p id="advHint" class="hint" hidden>
+        Guidance &amp; steps are only adjustable on <strong>FLUX.2 [flex]</strong> and
+        <strong>[klein]</strong>. [pro] and [max] are distilled and set these internally.
+      </p>
+
+      <div class="grid2">
+        <label class="field">
+          <span>Seed <em>(blank = random)</em></span>
+          <input type="number" id="seed" placeholder="random" />
+        </label>
+        <label class="field">
+          <span>Number of images</span>
+          <select id="count">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+      </div>
+
+      <label class="field checkbox">
+        <input type="checkbox" id="prompt_upsampling" />
+        <span>Prompt upsampling</span>
+      </label>
+
+      <div class="cost-row">
+        <span>Estimated cost</span>
+        <span id="costEstimate" class="cost-value">—</span>
+      </div>
+
+      <button id="generate" class="primary">Generate</button>
+      <p id="status" class="status"></p>
+    </section>
+
+    <!-- ---------------- Viewer (selected run) ---------------- -->
+    <section class="panel viewer">
+      <div id="viewerHead" class="viewer-head" hidden>
+        <span id="viewerPrompt" class="viewer-prompt"></span>
+        <span id="viewerMeta" class="viewer-meta"></span>
+      </div>
+      <div id="viewerGrid" class="viewer-grid empty">
+        <p>Your generated images will appear here — you can queue several runs at once.</p>
+      </div>
+    </section>
+
+    <!-- ---------------- Gallery sidebar ---------------- -->
+    <aside class="panel gallery">
+      <div class="gallery-head">Creations</div>
+      <div id="gDeleteBar" class="g-delete-bar" hidden>
+        <span id="gDeleteCount"></span>
+        <button type="button" id="gClearBtn" class="ghost">Cancel</button>
+        <button type="button" id="gDeleteBtn" class="g-delete-btn">Delete</button>
+      </div>
+      <div id="gallery" class="gallery-list"></div>
+    </aside>
+  </main>
+
+  <!-- ---------------- Lightbox modal ---------------- -->
+  <div id="lightbox" class="lightbox" hidden>
+    <button type="button" id="lbClose" class="lb-btn lb-close" title="Close (Esc)">×</button>
+    <button type="button" id="lbPrev" class="lb-btn lb-prev" title="Previous (←)">‹</button>
+    <figure class="lb-figure">
+      <img id="lbImg" alt="generated image" />
+      <figcaption class="lb-caption">
+        <span id="lbInfo"></span>
+        <a id="lbDownload" class="ghost" href="#">Download</a>
+      </figcaption>
+    </figure>
+    <button type="button" id="lbNext" class="lb-btn lb-next" title="Next (→)">›</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    hostname: rabbitmq
+    ports:
+      - "15672:15672" # management UI (guest/guest); AMQP 5672 stays internal
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      AMQP_URL: amqp://rabbitmq
+      OUTPUT_DIR: /data/outputs
+    volumes:
+      - outputs:/data/outputs
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: node worker.js
+    env_file: .env
+    environment:
+      AMQP_URL: amqp://rabbitmq
+      OUTPUT_DIR: /data/outputs
+      WORKER_CONCURRENCY: "2"
+    volumes:
+      - outputs:/data/outputs
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    # Scale throughput with: docker compose up -d --scale worker=3
+
+volumes:
+  outputs:
+  rabbitmq-data:
