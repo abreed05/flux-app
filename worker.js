@@ -1,10 +1,17 @@
 import { readFile } from "node:fs/promises";
+import { SpanKind } from "@opentelemetry/api";
 import { join } from "node:path";
 
 import { MODELS, INPUT_IMAGE_KEYS, generateWithRetry } from "./lib/bfl.js";
 import { connectQueue, consumeJobs, publishEvent } from "./lib/queue.js";
 import { OUTPUT_DIR, OUTPUTS_URL, writeJobResult } from "./lib/store.js";
+import { startTracing, withSpan, extractContext } from "./lib/tracing.js";
 
+startTracing("flux-app-worker");
+
+// Public origin of the api (e.g. https://flux.example.com) so traces can link
+// to the finished image; without it the link is the site-relative path.
+const PUBLIC_URL = (process.env.PUBLIC_URL || "").replace(/\/$/, "");
 const CONCURRENCY = Math.max(1, parseInt(process.env.WORKER_CONCURRENCY, 10) || 2);
 
 const { channel } = await connectQueue();
@@ -38,7 +45,17 @@ await consumeJobs(channel, CONCURRENCY, async (job, msg) => {
   publishEvent(channel, { type: "job.started", runId, jobIndex });
   console.log(`▶ job ${runId}/${jobIndex} started`);
   try {
-    const record = await processJob(job);
+    const record = await withSpan("flux.job", {
+      "openinference.span.kind": "CHAIN",
+      "flux.run_id": runId,
+      "flux.job_index": jobIndex,
+      "flux.model": job.modelId,
+      "input.value": job.payload?.prompt || "",
+    }, async (span) => {
+      const rec = await processJob(job);
+      span.setAttribute("output.value", PUBLIC_URL + rec.image);
+      return rec;
+    }, { kind: SpanKind.CONSUMER, parent: extractContext(msg.properties.headers) });
     publishEvent(channel, { type: "job.done", runId, jobIndex, job: record });
     console.log(`✔ job ${runId}/${jobIndex} done (seed ${record.seed})`);
   } catch (e) {
