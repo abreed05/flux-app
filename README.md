@@ -73,6 +73,16 @@ npm run worker     # in a second terminal
 Requires **Node 18+**. `AMQP_URL` defaults to `amqp://localhost` and outputs go to
 `./outputs/`.
 
+## Tracing (optional)
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` on the api and workers to export OpenTelemetry
+traces over OTLP/HTTP. Each run is one trace: `flux.run` (the request) →
+`flux.job` (one per image, joined across RabbitMQ via message headers) →
+`bfl.generate` with `bfl.submit` / `bfl.poll` / `bfl.download` children. Spans
+carry the prompt, model, parameters, seed and estimated cost using the attribute
+names Arize Phoenix and Langfuse understand; reference images are never exported.
+With the variable unset, tracing is off.
+
 ### Guidance scale & steps
 
 These sliders are only adjustable on **FLUX.2 [flex]** and **[klein]**. **[pro]** and

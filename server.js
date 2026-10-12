@@ -2,10 +2,14 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, normalize, extname, sep } from "node:path";
+import { SpanKind, trace } from "@opentelemetry/api";
 
 import { API_KEY, MODELS, INPUT_IMAGE_KEYS, MAX_INPUT_IMAGES, estimateCost, getCredits } from "./lib/bfl.js";
 import { connectQueue, publishJob, consumeEvents } from "./lib/queue.js";
 import { OUTPUT_DIR, OUTPUTS_URL, createRun, readRun, listRuns, deleteRun } from "./lib/store.js";
+import { startTracing, withSpan } from "./lib/tracing.js";
+
+startTracing("flux-app-api");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -186,6 +190,15 @@ async function handleCreateRun(req, res) {
     inputImages: inputImagesB64.length,
   }, inputBuffers);
 
+  trace.getActiveSpan()?.setAttributes({
+    "flux.run_id": runId,
+    "flux.model": body.model,
+    "flux.images": n,
+    "flux.input_images": inputImagesB64.length,
+    "flux.estimated_cost_usd": cost.usd,
+    "input.value": payload.prompt || "",
+  });
+
   // Give each image a distinct seed so a batch isn't identical.
   // If the user fixed a seed, offset from it; otherwise randomize per image.
   const baseSeed = payload.seed;
@@ -246,7 +259,12 @@ const server = createServer((req, res) => {
     return handleEvents(req, res);
   }
   if (req.method === "POST" && pathname === "/api/runs") {
-    return handleCreateRun(req, res).catch((e) => {
+    // Root span of the trace: the workers' job spans attach to it via AMQP headers.
+    return withSpan("flux.run", {
+      "openinference.span.kind": "CHAIN",
+      "http.request.method": "POST",
+      "http.route": "/api/runs",
+    }, () => handleCreateRun(req, res), { kind: SpanKind.SERVER }).catch((e) => {
       console.error("run submit failed:", e);
       if (!res.headersSent) sendJson(res, 500, { error: "Internal error", detail: String(e.message || e) });
     });
