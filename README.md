@@ -1,6 +1,6 @@
 # ⚡ FLUX Image Studio
 
-A web app for generating images with the **Black Forest Labs FLUX.2 API**.
+A web app for generating and editing images with the **Black Forest Labs FLUX 3 and FLUX.2 APIs**.
 The browser GUI talks to a small Node backend that proxies the API — so your API key
 stays on the server — and generation runs through a **RabbitMQ job queue** consumed by
 worker processes, so you can kick off multiple runs simultaneously and watch them all
@@ -8,19 +8,33 @@ complete live.
 
 ## Features
 
-- Model picker: **FLUX.2 [flex]**, **[pro]**, **[klein] 9B**, **[max]**
-- Prompt + **negative prompt**
-- **Multi-reference image-to-image**: up to **8 reference images**, referenced by number
-  in the prompt — *“the subject from image 1 in the environment from image 2”*
+- Model picker: **FLUX 3 Image** (default), **FLUX.2 [flex]**, **[pro]**, **[klein] 9B**, **[max]**
+- **FLUX 3 Image** (`/v1/flux-3-image`):
+  - One endpoint for generating and editing. The prompt decides which, and there is no mode switch
+  - **Instruction edits** and **multi-reference** with up to **10 images**
+  - **Bounding-box layouts and edits**: tag elements in the prompt (`<title_1>`) and end it
+    with a JSON list of boxes on a 0–1000 grid. See the
+    [box format](https://docs.bfl.ai/flux_3/flux3_image_layout)
+  - **Aspect ratio** (15 ratios, or `auto`, which follows the prompt or image 1) and
+    **resolution** tiers `768sq` / `1k` / `1.5k` / `2k` / `4k`
+  - **Grounding** toggle for the model's web and image search
+  - The **expanded prompt** FLUX 3 actually used appears on each result, and the **billed cost**
+    the API reports replaces the estimate
+  - The UI hides FLUX.2-only controls (negative prompt, size, seed, steps, guidance,
+    output format), because this endpoint rejects unknown fields
+- FLUX.2: prompt + **negative prompt**
+- **Multi-reference image-to-image**: up to **8 reference images** on FLUX.2 or **10** on FLUX 3,
+  referenced by number in the prompt: *“the subject from image 1 in the environment from image 2”*
 - **Concurrent runs**: queue as many runs as you like; each appears as a live-updating
   card in the feed (RabbitMQ + scalable workers)
 - **Persistent history**: images and run metadata are written to disk (a Docker volume),
   so the gallery survives restarts
 - **Live credits badge**: your remaining BFL balance in the top bar, refreshed after runs
-- **Guidance scale** and **steps** sliders — see note below
-- **Batch generation**: 1–4 images per run (each gets a distinct seed)
+- **Guidance scale** and **steps** sliders (FLUX.2 [flex]/[klein]), see note below
+- **Batch generation**: 1–4 images per run (on FLUX.2 each gets a distinct seed)
 - **Live credit-cost estimate** that updates with model, resolution, reference images, and count
-- Size presets + custom width/height, output format (PNG/JPEG), seed control, prompt upsampling
+  (FLUX 3 is a flat price per image by resolution tier)
+- FLUX.2: size presets + custom width/height, output format (PNG/JPEG), seed control, prompt upsampling
 
 ## Architecture
 

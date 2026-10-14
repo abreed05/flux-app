@@ -10,7 +10,7 @@
 <body>
   <header class="topbar">
     <h1>⚡ FLUX Image Studio</h1>
-    <span class="subtitle">Black Forest Labs · FLUX.2 API</span>
+    <span class="subtitle">Black Forest Labs · FLUX 3 &amp; FLUX.2 API</span>
     <span id="credits" class="credits" title="Remaining BFL account balance">credits: —</span>
   </header>
 
@@ -27,14 +27,25 @@
         <textarea id="prompt" rows="4" placeholder="A cinematic photo of a fox in a snowy forest, golden hour…"></textarea>
       </label>
 
-      <label class="field">
+      <p class="hint" data-param="images">
+        FLUX 3 decides from the prompt whether to generate or edit. To edit, add an image and
+        write the change (<em>“make only the middle bird #e01075”</em>). To place elements, tag
+        them in the prompt (<code>&lt;title_1&gt;</code>) and end it with a JSON list of boxes on
+        a 0–1000 grid, <code>[y0, x0, y1, x1]</code>:
+        <code>[{"id":"title_1","bbox":[50,100,200,900],"desc":"…"}]</code>.
+        Edits use <code>from</code>/<code>src_bbox</code>/<code>tgt_bbox</code> and
+        <code>&lt;ref_image_0&gt;</code>.
+        <a href="https://docs.bfl.ai/flux_3/flux3_image_layout" target="_blank" rel="noopener">Box format ↗</a>
+      </p>
+
+      <label class="field" data-param="negative_prompt">
         <span>Negative prompt <em>(things to avoid)</em></span>
         <textarea id="negative_prompt" rows="2" placeholder="blurry, extra fingers, watermark…"></textarea>
       </label>
 
       <!-- image-to-image (up to 8 references) -->
       <div class="field">
-        <span>Reference images <em>(optional, up to 8)</em></span>
+        <span>Reference images <em>(optional, up to <span id="maxRefs">8</span>)</em></span>
         <div class="i2i">
           <input type="file" id="input_image" accept="image/*" multiple />
         </div>
@@ -45,8 +56,32 @@
         </p>
       </div>
 
-      <div class="grid2">
+      <!-- FLUX 3: aspect ratio + resolution tier (no width/height) -->
+      <div class="grid2" data-param="resolution">
         <label class="field">
+          <span>Aspect ratio</span>
+          <select id="aspect_ratio">
+            <option value="auto">Auto (prompt / image 1)</option>
+            <option>21:9</option><option>2:1</option><option>16:9</option><option>3:2</option>
+            <option>7:5</option><option>4:3</option><option>5:4</option><option>1:1</option>
+            <option>4:5</option><option>3:4</option><option>5:7</option><option>2:3</option>
+            <option>9:16</option><option>1:2</option><option>9:21</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Resolution</span>
+          <select id="resolution">
+            <option value="768sq">768 · fast preview</option>
+            <option value="1k" selected>1K · ~1 MP</option>
+            <option value="1.5k">1.5K · ~2 MP</option>
+            <option value="2k">2K · ~4 MP</option>
+            <option value="4k">4K · ~16 MP</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label class="field" data-param="width">
           <span>Size</span>
           <select id="size">
             <option value="1024x1024">Square · 1024×1024</option>
@@ -57,7 +92,7 @@
             <option value="custom">Custom…</option>
           </select>
         </label>
-        <label class="field">
+        <label class="field" data-param="output_format">
           <span>Output format</span>
           <select id="output_format">
             <option value="png">PNG</option>
@@ -66,7 +101,7 @@
         </label>
       </div>
 
-      <div class="grid2" id="customSize" hidden>
+      <div class="grid2" id="customSize" data-param="width" hidden>
         <label class="field"><span>Width</span><input type="number" id="width" min="256" max="4096" step="16" value="1024" /></label>
         <label class="field"><span>Height</span><input type="number" id="height" min="256" max="4096" step="16" value="1024" /></label>
       </div>
@@ -88,7 +123,7 @@
       </p>
 
       <div class="grid2">
-        <label class="field">
+        <label class="field" data-param="seed">
           <span>Seed <em>(blank = random)</em></span>
           <input type="number" id="seed" placeholder="random" />
         </label>
@@ -103,9 +138,14 @@
         </label>
       </div>
 
-      <label class="field checkbox">
+      <label class="field checkbox" data-param="prompt_upsampling">
         <input type="checkbox" id="prompt_upsampling" />
         <span>Prompt upsampling</span>
+      </label>
+
+      <label class="field checkbox" data-param="grounding">
+        <input type="checkbox" id="grounding" checked />
+        <span>Grounding <em>(let FLUX 3 use web &amp; image search)</em></span>
       </label>
 
       <div class="cost-row">

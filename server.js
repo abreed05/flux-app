@@ -33,7 +33,7 @@ function sendJson(res, status, obj) {
   res.end(body);
 }
 
-function readBody(req, limitBytes = 134_217_728) { // ~128MB: up to 8 base64 input images
+function readBody(req, limitBytes = 167_772_160) { // ~160MB: up to 10 base64 input images
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -156,12 +156,15 @@ async function handleCreateRun(req, res) {
   // volume paths, not through RabbitMQ.
   const incoming = body.params || {};
   const inputImagesB64 = Array.isArray(incoming.input_images)
-    ? incoming.input_images.slice(0, MAX_INPUT_IMAGES) : [];
+    ? incoming.input_images.slice(0, model.maxImages ?? MAX_INPUT_IMAGES) : [];
   const payload = {};
   for (const [key, value] of Object.entries(incoming)) {
     if (key === "input_images" || !model.supports.has(key)) continue;
     if (value === "" || value === null || value === undefined) continue;
     payload[key] = value;
+  }
+  if (model.requiresPrompt && !payload.prompt) {
+    return sendJson(res, 400, { error: "This model requires a prompt." });
   }
   if (!payload.prompt && inputImagesB64.length === 0) {
     return sendJson(res, 400, { error: "A prompt (or a reference image) is required." });
@@ -177,7 +180,7 @@ async function handleCreateRun(req, res) {
   }
 
   const inputMp = Number(body.input_mp) || 0;
-  const perImage = estimateCost(model, payload.width, payload.height, inputMp);
+  const perImage = estimateCost(model, payload, inputMp);
   const cost = { usd: +(perImage * n).toFixed(4), credits: Math.round(perImage * n * 100), estimate: true };
 
   const { runId, inputPaths } = await createRun({
@@ -246,7 +249,10 @@ const server = createServer((req, res) => {
 
   if (req.method === "GET" && pathname === "/api/models") {
     return sendJson(res, 200,
-      Object.entries(MODELS).map(([id, m]) => ({ id, label: m.label, supports: [...m.supports], price: m.price })));
+      Object.entries(MODELS).map(([id, m]) => ({
+        id, label: m.label, supports: [...m.supports], price: m.price,
+        maxImages: m.maxImages, requiresPrompt: !!m.requiresPrompt,
+      })));
   }
   if (req.method === "GET" && pathname === "/api/credits") {
     return handleCredits(req, res);

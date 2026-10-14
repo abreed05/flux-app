@@ -1,9 +1,15 @@
 const $ = (id) => document.getElementById(id);
 
-const MAX_REF_IMAGES = 8;
-
 let MODELS = [];
-let refImages = []; // [{ b64, dataUrl, mp }] — index order matches "image 1..8" in the prompt
+let refImages = []; // [{ b64, dataUrl, mp, width, height }] — index order matches "image 1..N" in the prompt
+
+function maxRefImages() {
+  return currentModel()?.maxImages ?? 8;
+}
+
+// FLUX 3 rejects references over 16 MP (400) or under 256 × 256 (422).
+const FLUX3_MAX_REF_MP = 16 * 1024 * 1024 / 1_000_000;
+const FLUX3_MIN_REF_SIDE = 256;
 
 // ---- init ---------------------------------------------------------------
 async function init() {
@@ -37,17 +43,24 @@ function onModelChange() {
   updateCost();
 }
 
-// Enable/disable controls the selected model doesn't support, and show a hint.
+function modelSupports(param) {
+  return (currentModel()?.supports || []).includes(param);
+}
+
+// Hide controls the selected model's API doesn't accept (FLUX 3 rejects
+// unknown fields, and drops most FLUX.2 knobs), and show a hint.
 function syncModelCapabilities() {
-  const model = currentModel();
-  const supports = new Set(model ? model.supports : []);
-  let anyDisabled = false;
-  document.querySelectorAll(".slider[data-param]").forEach((el) => {
-    const ok = supports.has(el.dataset.param);
-    el.classList.toggle("disabled", !ok);
-    if (!ok) anyDisabled = true;
+  document.querySelectorAll("[data-param]").forEach((el) => {
+    el.classList.toggle("unsupported", !modelSupports(el.dataset.param));
   });
-  $("advHint").hidden = !anyDisabled;
+  // The guidance/steps note only makes sense among the FLUX.2 models.
+  $("advHint").hidden = !(modelSupports("width") && !modelSupports("guidance"));
+
+  const max = maxRefImages();
+  $("maxRefs").textContent = max;
+  if (refImages.length > max) {
+    setStatus(`This model takes up to ${max} reference images — only the first ${max} will be sent.`, true);
+  }
 }
 
 // ---- credits badge ------------------------------------------------------
@@ -90,14 +103,19 @@ function totalInputMp() {
   return refImages.reduce((sum, r) => sum + r.mp, 0);
 }
 
+// Mirrors estimateCost() in lib/bfl.js.
+function perImageCost(p) {
+  if (p.tiers) return p.tiers[$("resolution").value] ?? p.tiers["1k"]; // FLUX 3: flat per tier
+  const { width, height } = currentSize();
+  const outMp = (width * height) / 1_000_000;
+  return p.firstMp + Math.max(0, outMp - 1) * p.extraMp + totalInputMp() * p.inputMp;
+}
+
 function updateCost() {
   const model = currentModel();
   if (!model || !model.price) { $("costEstimate").textContent = "—"; return; }
-  const { width, height } = currentSize();
   const n = Number($("count").value);
-  const p = model.price;
-  const outMp = (width * height) / 1_000_000;
-  const per = p.firstMp + Math.max(0, outMp - 1) * p.extraMp + totalInputMp() * p.inputMp;
+  const per = perImageCost(model.price);
   const usd = per * n;
   const credits = Math.round(usd * 100);
   const each = n > 1 ? ` (${n} × ${(per).toFixed(3)})` : "";
@@ -112,12 +130,13 @@ $("size").addEventListener("change", (e) => {
 $("width").addEventListener("input", updateCost);
 $("height").addEventListener("input", updateCost);
 $("count").addEventListener("change", updateCost);
+$("resolution").addEventListener("change", updateCost);
 
 // ---- slider value read-outs -------------------------------------------
 $("guidance").addEventListener("input", (e) => ($("guidanceOut").textContent = e.target.value));
 $("steps").addEventListener("input", (e) => ($("stepsOut").textContent = e.target.value));
 
-// ---- reference images (up to 8) -----------------------------------------
+// ---- reference images (up to 8 on FLUX.2, 10 on FLUX 3) ---------------------
 function renderRefThumbs() {
   const box = $("i2iThumbs");
   box.innerHTML = "";
@@ -155,6 +174,8 @@ function readFileAsRef(file) {
         b64: reader.result.split(",")[1], // strip data URI prefix
         dataUrl: reader.result,
         mp: (img.naturalWidth * img.naturalHeight) / 1_000_000,
+        width: img.naturalWidth,
+        height: img.naturalHeight,
       });
       img.onerror = () => reject(new Error(`Could not read ${file.name}`));
       img.src = reader.result;
@@ -167,8 +188,8 @@ $("input_image").addEventListener("change", async (e) => {
   const files = [...e.target.files];
   e.target.value = ""; // allow re-selecting the same file later
   for (const file of files) {
-    if (refImages.length >= MAX_REF_IMAGES) {
-      setStatus(`Reference limit is ${MAX_REF_IMAGES} images.`, true);
+    if (refImages.length >= maxRefImages()) {
+      setStatus(`Reference limit is ${maxRefImages()} images for this model.`, true);
       break;
     }
     try {
@@ -338,7 +359,11 @@ function renderViewer(run) {
   head.hidden = false;
   $("viewerPrompt").textContent = run.prompt || "(image-only run)";
   $("viewerPrompt").title = run.prompt;
-  const c = run.cost ? ` · ≈ ${run.cost.credits} cr` : "";
+  // Prefer the billed cost the API reported (FLUX 3) once every image is in.
+  const billed = (run.jobs || []).map((j) => j.costCredits);
+  const c = billed.length === run.n && billed.every((x) => typeof x === "number")
+    ? ` · ${+billed.reduce((a, b) => a + b, 0).toFixed(2)} cr`
+    : run.cost ? ` · ≈ ${run.cost.credits} cr` : "";
   $("viewerMeta").textContent = `${(run.modelLabel || run.model || "").split("  ")[0]} · ${run.n} image${run.n > 1 ? "s" : ""}${c}`;
 
   grid.className = `viewer-grid cols-${run.n >= 2 ? 2 : 1}`;
@@ -366,8 +391,25 @@ function renderViewerCell(run, job) {
     dl.textContent = "Download";
     dl.href = job.image;
     dl.download = `flux-${job.seed ?? job.index}.${(job.file || "image.png").split(".").pop()}`;
-    bar.append(seedSpan, dl);
+    bar.append(seedSpan);
     cell.append(img, bar);
+    if (job.expandedPrompt) {
+      // FLUX 3 expands short prompts and edits (and may add boxes); show what it used.
+      const expanded = document.createElement("pre");
+      expanded.className = "v-expanded";
+      expanded.textContent = job.expandedPrompt;
+      expanded.hidden = true;
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.textContent = "Expanded prompt";
+      toggle.addEventListener("click", () => {
+        expanded.hidden = !expanded.hidden;
+        cell.classList.toggle("show-expanded", !expanded.hidden);
+      });
+      bar.append(toggle);
+      cell.append(expanded);
+    }
+    bar.append(dl);
   } else if (job.status === "failed") {
     cell.classList.add("failed");
     const msg = document.createElement("p");
@@ -478,31 +520,51 @@ function connectEvents() {
 }
 
 // ---- generate ----------------------------------------------------------
+// The server also drops fields the model doesn't support; aspect_ratio is
+// gated here because FLUX.2 accepts it too, but there width/height win.
 function buildParams() {
-  const { width, height } = currentSize();
-  const params = {
-    prompt: $("prompt").value.trim(),
-    negative_prompt: $("negative_prompt").value.trim(),
-    output_format: $("output_format").value,
-    width,
-    height,
-    guidance: Number($("guidance").value),
-    steps: Number($("steps").value),
-  };
-  const seed = $("seed").value.trim();
-  if (seed !== "") params.seed = Number(seed);
-  if ($("prompt_upsampling").checked) params.prompt_upsampling = true;
-  if (refImages.length) params.input_images = refImages.map((r) => r.b64);
+  const params = { prompt: $("prompt").value.trim() };
+  if (modelSupports("resolution")) {
+    params.aspect_ratio = $("aspect_ratio").value;
+    params.resolution = $("resolution").value;
+    params.grounding = $("grounding").checked;
+  } else {
+    Object.assign(params, currentSize(), {
+      negative_prompt: $("negative_prompt").value.trim(),
+      output_format: $("output_format").value,
+      guidance: Number($("guidance").value),
+      steps: Number($("steps").value),
+    });
+    const seed = $("seed").value.trim();
+    if (seed !== "") params.seed = Number(seed);
+    if ($("prompt_upsampling").checked) params.prompt_upsampling = true;
+  }
+  if (refImages.length) params.input_images = refImages.slice(0, maxRefImages()).map((r) => r.b64);
   return params;
+}
+
+// Catch FLUX 3 input errors before spending a queue slot on them.
+function validateRefs() {
+  if (!modelSupports("images")) return null;
+  for (const [i, r] of refImages.entries()) {
+    if (r.mp > FLUX3_MAX_REF_MP) return `Image ${i + 1} is ${r.mp.toFixed(1)} MP — FLUX 3 accepts up to 16 MP. Downscale it first.`;
+    if (Math.min(r.width, r.height) < FLUX3_MIN_REF_SIDE) return `Image ${i + 1} is ${r.width}×${r.height} — FLUX 3 needs at least 256×256.`;
+  }
+  return null;
 }
 
 $("generate").addEventListener("click", async () => {
   const params = buildParams();
   const n = Number($("count").value);
 
+  if (currentModel()?.requiresPrompt && !params.prompt) {
+    return setStatus("Enter a prompt — with reference images, describe what to do with them.", true);
+  }
   if (!params.prompt && !refImages.length) {
     return setStatus("Enter a prompt (or add a reference image).", true);
   }
+  const refError = validateRefs();
+  if (refError) return setStatus(refError, true);
   setStatus("Queuing run…");
 
   try {

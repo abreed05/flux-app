@@ -22,18 +22,24 @@ async function processJob(job) {
   if (!model) throw new Error(`Unknown model in job: ${modelId}`);
 
   // Reference images live on the shared volume; inline them for the API call.
-  for (let k = 0; k < inputPaths.length; k++) {
-    const buf = await readFile(join(OUTPUT_DIR, inputPaths[k]));
-    payload[INPUT_IMAGE_KEYS[k]] = buf.toString("base64");
+  // FLUX 3 takes them as one `images` array, FLUX.2 as input_image, input_image_2, …
+  const images = await Promise.all(inputPaths.map(async (rel) =>
+    (await readFile(join(OUTPUT_DIR, rel))).toString("base64")));
+  if (model.imagesField) {
+    if (images.length) payload[model.imagesField] = images;
+  } else {
+    images.forEach((b64, k) => { payload[INPUT_IMAGE_KEYS[k]] = b64; });
   }
 
-  const { buffer, contentType, seed, id } = await generateWithRetry(model, payload);
+  const { buffer, contentType, seed, id, cost, expandedPrompt } = await generateWithRetry(model, payload);
   const ext = contentType.includes("jpeg") ? "jpeg" : contentType.includes("webp") ? "webp" : "png";
   const record = await writeJobResult(runId, jobIndex, {
     index: jobIndex,
     status: "done",
     seed: seed ?? payload.seed,
     bflId: id,
+    ...(typeof cost === "number" ? { costCredits: cost } : {}),
+    ...(expandedPrompt ? { expandedPrompt } : {}),
     finishedAt: new Date().toISOString(),
   }, buffer, ext);
   record.image = `${OUTPUTS_URL}/runs/${runId}/${record.file}`;

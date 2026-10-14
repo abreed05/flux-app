@@ -92,6 +92,8 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 .field.disabled { opacity: .4; pointer-events: none; }
+/* controls the selected model's API doesn't accept */
+[data-param].unsupported { display: none !important; }
 
 .hint {
   font-size: .78rem;
@@ -105,6 +107,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   line-height: 1.4;
 }
 .hint strong { color: var(--text); }
+.hint code { font-size: .72rem; color: var(--text); word-break: break-word; }
+.hint a { color: var(--accent-2); }
 
 .cost-row {
   display: flex;
@@ -267,6 +271,31 @@ button {
 }
 .v-cell:hover .v-bar { opacity: 1; }
 .v-cell .v-bar a { color: var(--accent-2); text-decoration: none; }
+.v-cell .v-bar button {
+  font: inherit;
+  color: var(--accent-2);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+/* FLUX 3's expanded prompt (result.prompt), shown over the image */
+.v-cell .v-expanded {
+  position: absolute;
+  inset: 0 0 30px 0;
+  margin: 0;
+  padding: 12px;
+  overflow-y: auto;
+  font-size: .75rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  background: rgba(0,0,0,.85);
+}
+.v-cell.show-expanded .v-bar { opacity: 1; }
 
 /* ---- gallery sidebar ------------------------------------------------------ */
 .gallery {
