@@ -29,14 +29,18 @@
 
       <p class="hint" data-param="images">
         FLUX 3 decides from the prompt whether to generate or edit. To edit, add an image and
-        write the change (<em>“make only the middle bird #e01075”</em>). To place elements, tag
-        them in the prompt (<code>&lt;title_1&gt;</code>) and end it with a JSON list of boxes on
-        a 0–1000 grid, <code>[y0, x0, y1, x1]</code>:
-        <code>[{"id":"title_1","bbox":[50,100,200,900],"desc":"…"}]</code>.
-        Edits use <code>from</code>/<code>src_bbox</code>/<code>tgt_bbox</code> and
-        <code>&lt;ref_image_0&gt;</code>.
-        <a href="https://docs.bfl.ai/flux_3/flux3_image_layout" target="_blank" rel="noopener">Box format ↗</a>
+        write the change (<em>“make only the middle bird #e01075”</em>). To place, move or
+        remove specific elements, draw <strong>bounding boxes</strong> below.
       </p>
+
+      <div class="field" data-param="images">
+        <span>Bounding boxes <em>(optional)</em></span>
+        <div class="box-summary">
+          <span id="boxSummary">No boxes</span>
+          <button type="button" id="boxClear" class="ghost" hidden>Clear</button>
+          <button type="button" id="boxOpen" class="ghost">Edit boxes…</button>
+        </div>
+      </div>
 
       <label class="field" data-param="negative_prompt">
         <span>Negative prompt <em>(things to avoid)</em></span>
@@ -194,6 +198,45 @@
     <button type="button" id="lbNext" class="lb-btn lb-next" title="Next (→)">›</button>
   </div>
 
+  <!-- ---------------- Bounding-box editor (FLUX 3) ---------------- -->
+  <div id="boxModal" class="box-modal" hidden>
+    <div class="bx-dialog" role="dialog" aria-modal="true" aria-labelledby="bxTitle">
+      <header class="bx-head">
+        <strong id="bxTitle">Bounding boxes</strong>
+        <span id="bxMode" class="bx-mode"></span>
+        <label class="bx-aspect">Aspect <select id="bxAspect"></select></label>
+        <a class="bx-doc" href="https://docs.bfl.ai/flux_3/flux3_image_bounding_boxes" target="_blank" rel="noopener">Docs ↗</a>
+        <button type="button" id="bxClose" class="primary bx-done">Done</button>
+      </header>
+      <div class="bx-body">
+        <div class="bx-left">
+          <div id="bxTabs" class="bx-tabs" hidden></div>
+          <div id="bxStageWrap" class="bx-stage-wrap">
+            <div id="bxStage" class="bx-stage">
+              <img id="bxBg" class="bx-bg" alt="" draggable="false" hidden />
+              <div id="bxLayer" class="bx-layer"></div>
+            </div>
+          </div>
+          <p class="bx-help"><span id="bxHelp"></span> <span id="bxCursor" class="bx-cursor"></span></p>
+        </div>
+        <div class="bx-right">
+          <label class="field">
+            <span>Prompt <em>(name each box as &lt;id&gt;)</em></span>
+            <textarea id="bxCaption" rows="5" placeholder="A poster of a lighthouse <lighthouse_1> under a night sky <sky_1>, with the title <title_1> across the top…"></textarea>
+          </label>
+          <div id="bxTokens" class="bx-tokens"></div>
+          <div id="bxWarn" class="hint bx-warn" hidden></div>
+          <ol id="bxRows" class="bx-rows"></ol>
+          <details class="bx-json">
+            <summary>Rows appended to the prompt</summary>
+            <pre id="bxJson"></pre>
+          </details>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="boxes.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

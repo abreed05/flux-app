@@ -29,6 +29,12 @@ async function init() {
   sel.addEventListener("change", onModelChange);
   onModelChange();
 
+  BoxEditor.init({
+    refs: () => refImages.slice(0, maxRefImages()),
+    prompt: $("prompt"),
+    aspect: $("aspect_ratio"),
+  });
+
   refreshCredits();
   loadHistory();
   connectEvents();
@@ -156,6 +162,7 @@ function renderRefThumbs() {
     rm.addEventListener("click", () => {
       refImages.splice(i, 1);
       renderRefThumbs();
+      BoxEditor.refRemoved(i);
       updateCost();
     });
     wrap.append(img, tag, rm);
@@ -199,6 +206,7 @@ $("input_image").addEventListener("change", async (e) => {
     }
   }
   renderRefThumbs();
+  BoxEditor.refsChanged();
   updateCost();
 });
 
@@ -540,6 +548,7 @@ function buildParams() {
     if ($("prompt_upsampling").checked) params.prompt_upsampling = true;
   }
   if (refImages.length) params.input_images = refImages.slice(0, maxRefImages()).map((r) => r.b64);
+  if (modelSupports("images")) params.prompt = BoxEditor.applyTo(params.prompt);
   return params;
 }
 
@@ -563,7 +572,7 @@ $("generate").addEventListener("click", async () => {
   if (!params.prompt && !refImages.length) {
     return setStatus("Enter a prompt (or add a reference image).", true);
   }
-  const refError = validateRefs();
+  const refError = validateRefs() || (modelSupports("images") && BoxEditor.validate());
   if (refError) return setStatus(refError, true);
   setStatus("Queuing run…");
 

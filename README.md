@@ -12,9 +12,12 @@ complete live.
 - **FLUX 3 Image** (`/v1/flux-3-image`):
   - One endpoint for generating and editing. The prompt decides which, and there is no mode switch
   - **Instruction edits** and **multi-reference** with up to **10 images**
-  - **Bounding-box layouts and edits**: tag elements in the prompt (`<title_1>`) and end it
-    with a JSON list of boxes on a 0–1000 grid. See the
-    [box format](https://docs.bfl.ai/flux_3/flux3_image_layout)
+  - **Visual bounding-box editor** for layouts and edits. Draw boxes on the output frame
+    (layouts) or on your reference images (edits), and mark each element **Keep**, **Move**,
+    **New** or **Remove**. The editor writes the
+    [box table](https://docs.bfl.ai/flux_3/flux3_image_bounding_boxes) FLUX 3 expects at the
+    end of the prompt and flags ids the prompt doesn't name. A box table pasted into the
+    prompt (e.g. from the BFL docs) is imported when you open the editor
   - **Aspect ratio** (15 ratios, or `auto`, which follows the prompt or image 1) and
     **resolution** tiers `768sq` / `1k` / `1.5k` / `2k` / `4k`
   - **Grounding** toggle for the model's web and image search
