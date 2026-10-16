@@ -243,42 +243,47 @@ function renderGalleryEntry(run) {
     item.className = "g-item";
     item.dataset.id = run.id;
     item.addEventListener("click", () => selectRun(run.id));
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "g-check";
+    check.title = "Select for deletion";
+    check.addEventListener("click", (e) => e.stopPropagation()); // don't open in viewer
+    check.addEventListener("change", () => setChecked(run.id, check.checked));
+
+    const grid = document.createElement("div");
+    grid.className = `g-grid cols-${run.n >= 2 ? 2 : 1}`;
+    for (let i = 0; i < run.n; i++) grid.appendChild(document.createElement("div"));
+    item.append(check, grid);
   }
   item.classList.toggle("selected", selectedId === run.id);
   item.classList.toggle("checked", checkedIds.has(run.id));
+  item.querySelector(".g-check").checked = checkedIds.has(run.id);
   item.title = run.prompt || "(image-only run)";
-  item.innerHTML = "";
 
-  const check = document.createElement("input");
-  check.type = "checkbox";
-  check.className = "g-check";
-  check.title = "Select for deletion";
-  check.checked = checkedIds.has(run.id);
-  check.addEventListener("click", (e) => e.stopPropagation()); // don't open in viewer
-  check.addEventListener("change", () => setChecked(run.id, check.checked));
-  item.appendChild(check);
-
-  const grid = document.createElement("div");
-  grid.className = `g-grid cols-${run.n >= 2 ? 2 : 1}`;
-  for (let i = 0; i < run.n; i++) {
+  // Only touch cells whose state changed, so loaded <img>s aren't recreated.
+  item.querySelectorAll(".g-grid > div").forEach((cell, i) => {
     const job = run.jobs?.[i] || { status: "pending" };
-    const cell = document.createElement("div");
+    const src = job.status === "done" ? job.thumb || job.image : null;
+    const key = src ? `img:${src}` : job.status === "failed" ? "failed" : "waiting";
+    if (cell.dataset.key === key) return;
+    cell.dataset.key = key;
     cell.className = "g-cell";
-    if (job.status === "done" && job.image) {
+    cell.textContent = "";
+    if (src) {
       const img = new Image();
-      img.src = job.image;
+      img.src = src;
       img.loading = "lazy";
+      img.decoding = "async";
       img.alt = "";
       cell.appendChild(img);
-    } else if (job.status === "failed") {
+    } else if (key === "failed") {
       cell.classList.add("failed");
       cell.textContent = "⚠";
     } else {
       cell.classList.add("waiting");
     }
-    grid.appendChild(cell);
-  }
-  item.appendChild(grid);
+  });
 
   if (fresh) $("gallery").prepend(item);
   return item;
@@ -506,6 +511,24 @@ async function loadHistory() {
   selectRun(selectedId);
 }
 
+// A run started in another tab: fetch just that run instead of reloading history.
+// Events for the same run await one shared fetch, so they still apply in order.
+const runFetches = new Map();
+
+function fetchUnknownRun(runId) {
+  if (!runFetches.has(runId)) {
+    runFetches.set(runId, fetch(`/api/runs/${encodeURIComponent(runId)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null)
+      .then((run) => {
+        runFetches.delete(runId);
+        if (run && !runs.has(runId)) upsertRun(run);
+        return runs.get(runId) || null;
+      }));
+  }
+  return runFetches.get(runId);
+}
+
 function connectEvents() {
   const es = new EventSource("/api/events");
   es.onmessage = async (e) => {
@@ -516,8 +539,8 @@ function connectEvents() {
     if (ev.type === "runs.deleted") { removeRunsLocally(ev.ids || []); return; }
     if (!ev.runId) return;
 
-    const run = runs.get(ev.runId);
-    if (!run) { await loadHistory(); return; } // run from another tab / before reload
+    const run = runs.get(ev.runId) || await fetchUnknownRun(ev.runId);
+    if (!run) return;
 
     if (!Array.isArray(run.jobs)) run.jobs = [];
     if (ev.type === "job.started") run.jobs[ev.jobIndex] = { index: ev.jobIndex, status: "running" };

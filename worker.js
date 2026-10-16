@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { MODELS, INPUT_IMAGE_KEYS, generateWithRetry } from "./lib/bfl.js";
 import { connectQueue, consumeJobs, publishEvent } from "./lib/queue.js";
-import { OUTPUT_DIR, OUTPUTS_URL, writeJobResult } from "./lib/store.js";
+import { OUTPUT_DIR, withImageUrls, writeJobResult } from "./lib/store.js";
 import { startTracing, withSpan, extractContext } from "./lib/tracing.js";
 
 startTracing("flux-app-worker");
@@ -13,8 +13,6 @@ startTracing("flux-app-worker");
 // to the finished image; without it the link is the site-relative path.
 const PUBLIC_URL = (process.env.PUBLIC_URL || "").replace(/\/$/, "");
 const CONCURRENCY = Math.max(1, parseInt(process.env.WORKER_CONCURRENCY, 10) || 2);
-
-const { channel } = await connectQueue();
 
 async function processJob(job) {
   const { runId, jobIndex, modelId, payload, inputPaths = [] } = job;
@@ -42,13 +40,12 @@ async function processJob(job) {
     ...(expandedPrompt ? { expandedPrompt } : {}),
     finishedAt: new Date().toISOString(),
   }, buffer, ext);
-  record.image = `${OUTPUTS_URL}/runs/${runId}/${record.file}`;
-  return record;
+  return withImageUrls(runId, record);
 }
 
-await consumeJobs(channel, CONCURRENCY, async (job, msg) => {
+async function handleJob(job, msg, channel) {
   const { runId, jobIndex } = job;
-  publishEvent(channel, { type: "job.started", runId, jobIndex });
+  publishEvent(queue, { type: "job.started", runId, jobIndex });
   console.log(`▶ job ${runId}/${jobIndex} started`);
   try {
     const record = await withSpan("flux.job", {
@@ -62,7 +59,7 @@ await consumeJobs(channel, CONCURRENCY, async (job, msg) => {
       span.setAttribute("output.value", PUBLIC_URL + rec.image);
       return rec;
     }, { kind: SpanKind.CONSUMER, parent: extractContext(msg.properties.headers) });
-    publishEvent(channel, { type: "job.done", runId, jobIndex, job: record });
+    publishEvent(queue, { type: "job.done", runId, jobIndex, job: record });
     console.log(`✔ job ${runId}/${jobIndex} done (seed ${record.seed})`);
   } catch (e) {
     // generateWithRetry already retried transient failures, so any error here
@@ -76,12 +73,18 @@ await consumeJobs(channel, CONCURRENCY, async (job, msg) => {
         error,
         finishedAt: new Date().toISOString(),
       });
-      publishEvent(channel, { type: "job.failed", runId, jobIndex, job: record });
+      publishEvent(queue, { type: "job.failed", runId, jobIndex, job: record });
     } catch (writeErr) {
       console.error(`  could not persist failure record: ${writeErr.message}`);
     }
   }
-  channel.ack(msg);
-});
+  // Ack on the channel the message arrived on. If a reconnect replaced it the
+  // broker has already requeued this job, so the throw is expected — not fatal.
+  try { channel.ack(msg); }
+  catch { console.warn(`  ack for ${runId}/${jobIndex} dropped (channel replaced); job will be redelivered`); }
+}
+
+// Re-subscribed on every reconnect; consumers do not survive a closed channel.
+const queue = await connectQueue({ setup: (ch) => consumeJobs(ch, CONCURRENCY, handleJob) });
 
 console.log(`FLUX worker consuming (concurrency ${CONCURRENCY})`);

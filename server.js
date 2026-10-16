@@ -1,12 +1,13 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, normalize, extname, sep } from "node:path";
 import { SpanKind, trace } from "@opentelemetry/api";
 
 import { API_KEY, MODELS, INPUT_IMAGE_KEYS, MAX_INPUT_IMAGES, estimateCost, getCredits } from "./lib/bfl.js";
 import { connectQueue, publishJob, consumeEvents } from "./lib/queue.js";
-import { OUTPUT_DIR, OUTPUTS_URL, createRun, readRun, listRuns, deleteRun } from "./lib/store.js";
+import { OUTPUT_DIR, OUTPUTS_URL, createRun, readRun, listRuns, deleteRun, ensureThumb } from "./lib/store.js";
 import { startTracing, withSpan } from "./lib/tracing.js";
 
 startTracing("flux-app-api");
@@ -50,18 +51,48 @@ function readBody(req, limitBytes = 167_772_160) { // ~160MB: up to 10 base64 in
 // ---- static file serving ------------------------------------------------
 const PUBLIC_DIR = join(__dirname, "public");
 
+// Generated images never change once written (each lives under a unique
+// runId), so they are cached forever. UI files revalidate via ETag.
+const IMMUTABLE = "public, max-age=31536000, immutable";
+const THUMB_PATH = /^\/runs\/([a-z0-9-]+)\/thumb-(\d+)\.webp$/i;
+
 // Serve urlPath from rootDir with a path-traversal guard. Used for both the
 // UI (public/) and generated images (OUTPUT_DIR, mounted at /outputs).
-function serveFrom(rootDir, urlPath, res) {
+async function serveFrom(rootDir, urlPath, req, res, cacheControl) {
   const filePath = normalize(join(rootDir, urlPath));
   if (filePath !== rootDir && !filePath.startsWith(rootDir + sep)) {
     res.writeHead(403); res.end("Forbidden"); return;
   }
-  readFile(filePath, (err, data) => {
-    if (err) { res.writeHead(404); res.end("Not found"); return; }
-    res.writeHead(200, { "Content-Type": MIME[extname(filePath)] || "application/octet-stream" });
-    res.end(data);
+  let st;
+  try {
+    st = await stat(filePath);
+    if (!st.isFile()) throw new Error("not a file");
+  } catch {
+    res.writeHead(404); res.end("Not found"); return;
+  }
+  const etag = `W/"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
+  const headers = { "Cache-Control": cacheControl, ETag: etag };
+  if (req.headers["if-none-match"] === etag) {
+    res.writeHead(304, headers); res.end(); return;
+  }
+  res.writeHead(200, {
+    ...headers,
+    "Content-Type": MIME[extname(filePath)] || "application/octet-stream",
+    "Content-Length": st.size,
   });
+  createReadStream(filePath).on("error", () => res.destroy()).pipe(res);
+}
+
+async function serveOutput(urlPath, req, res) {
+  const thumb = urlPath.match(THUMB_PATH);
+  if (thumb) {
+    try { await stat(join(OUTPUT_DIR, urlPath)); }
+    catch {
+      try { await ensureThumb(thumb[1], Number(thumb[2])); }
+      catch { res.writeHead(404); res.end("Not found"); return; }
+    }
+  }
+  return serveFrom(OUTPUT_DIR, urlPath, req, res, IMMUTABLE);
 }
 
 function serveStatic(req, res) {
@@ -72,14 +103,16 @@ function serveStatic(req, res) {
     res.writeHead(400); res.end("Bad request"); return;
   }
   if (urlPath === "/") urlPath = "/index.html";
-  if (urlPath.startsWith(OUTPUTS_URL + "/")) {
-    return serveFrom(OUTPUT_DIR, urlPath.slice(OUTPUTS_URL.length), res);
-  }
-  serveFrom(PUBLIC_DIR, urlPath, res);
+  const done = urlPath.startsWith(OUTPUTS_URL + "/")
+    ? serveOutput(urlPath.slice(OUTPUTS_URL.length), req, res)
+    : serveFrom(PUBLIC_DIR, urlPath, req, res, "no-cache");
+  done.catch((e) => {
+    console.error("static serve failed:", e);
+    if (!res.headersSent) { res.writeHead(500); res.end("Internal error"); }
+  });
 }
 
 // ---- queue + live events -------------------------------------------------
-const { channel } = await connectQueue();
 
 // Connected SSE clients and per-run completion counters (for run.done).
 const sseClients = new Set();
@@ -90,7 +123,7 @@ function broadcast(event) {
   for (const res of sseClients) res.write(frame);
 }
 
-await consumeEvents(channel, async (event) => {
+async function onJobEvent(event) {
   broadcast(event);
   if (event.type !== "job.done" && event.type !== "job.failed") return;
 
@@ -105,7 +138,10 @@ await consumeEvents(channel, async (event) => {
     runProgress.delete(event.runId);
     broadcast({ type: "run.done", runId: event.runId });
   }
-});
+}
+
+// Re-subscribed on every reconnect: the old exclusive queue dies with the connection.
+const queue = await connectQueue({ setup: (ch) => consumeEvents(ch, onJobEvent) });
 
 function handleEvents(req, res) {
   res.writeHead(200, {
@@ -140,6 +176,10 @@ async function handleCredits(req, res) {
 async function handleCreateRun(req, res) {
   if (!API_KEY) {
     return sendJson(res, 503, { error: "BFL_API_KEY is not set. Copy .env.example to .env and add your key." });
+  }
+  // Fail before createRun writes anything, so a broker outage leaves no orphan runs.
+  if (!queue.channel) {
+    return sendJson(res, 503, { error: "Message broker unavailable — reconnecting. Try again shortly." });
   }
   let body;
   try {
@@ -209,7 +249,7 @@ async function handleCreateRun(req, res) {
     const p = { ...payload };
     if (baseSeed !== undefined) p.seed = Number(baseSeed) + i;
     else if (model.supports.has("seed")) p.seed = Math.floor(Math.random() * 2_147_483_647);
-    publishJob(channel, { runId, jobIndex: i, modelId: body.model, payload: p, inputPaths });
+    publishJob(queue, { runId, jobIndex: i, modelId: body.model, payload: p, inputPaths });
   }
   runProgress.set(runId, { n, settled: 0 });
 
@@ -254,12 +294,22 @@ const server = createServer((req, res) => {
         maxImages: m.maxImages, requiresPrompt: !!m.requiresPrompt,
       })));
   }
+  // k8s readiness probe target: a pod that has lost the broker still serves
+  // /api/models fine but cannot submit a thing. Liveness stays on /api/models.
+  if (req.method === "GET" && pathname === "/api/health") {
+    const broker = queue.channel ? "connected" : "disconnected";
+    return sendJson(res, queue.channel ? 200 : 503, { ok: !!queue.channel, broker });
+  }
   if (req.method === "GET" && pathname === "/api/credits") {
     return handleCredits(req, res);
   }
   if (req.method === "GET" && pathname === "/api/runs") {
     return listRuns().then((runs) => sendJson(res, 200, runs))
       .catch((e) => sendJson(res, 500, { error: String(e.message || e) }));
+  }
+  if (req.method === "GET" && pathname.startsWith("/api/runs/")) {
+    return readRun(pathname.slice("/api/runs/".length)).then((run) => sendJson(res, 200, run))
+      .catch(() => sendJson(res, 404, { error: "Run not found" }));
   }
   if (req.method === "GET" && pathname === "/api/events") {
     return handleEvents(req, res);
