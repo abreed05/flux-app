@@ -42,6 +42,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .credits.error { color: var(--muted); font-weight: 400; }
+.credits:not([hidden]) ~ .credits { margin-left: 0; }
 
 .layout {
   display: grid;
@@ -94,6 +95,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .field.disabled { opacity: .4; pointer-events: none; }
 /* controls the selected model's API doesn't accept */
 [data-param].unsupported { display: none !important; }
+[hidden] { display: none !important; } /* .field and .grid2 set display, which beats the attribute */
 
 .hint {
   font-size: .78rem;

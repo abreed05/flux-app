@@ -10,8 +10,9 @@
 <body>
   <header class="topbar">
     <h1>⚡ FLUX Image Studio</h1>
-    <span class="subtitle">Black Forest Labs · FLUX 3 &amp; FLUX.2 API</span>
-    <span id="credits" class="credits" title="Remaining BFL account balance">credits: —</span>
+    <span class="subtitle">Black Forest Labs FLUX 3 &amp; FLUX.2 · Anifusion</span>
+    <span id="credits" class="credits" title="Remaining BFL account balance" hidden>credits: —</span>
+    <span id="anifusionCredits" class="credits" title="Remaining Anifusion credits" hidden>Anifusion: —</span>
   </header>
 
   <main class="layout">
@@ -26,6 +27,16 @@
         <span>Prompt</span>
         <textarea id="prompt" rows="4" placeholder="A cinematic photo of a fox in a snowy forest, golden hour…"></textarea>
       </label>
+
+      <label class="field" data-param="tags">
+        <span>Tags <em>(optional, e.g. silver hair, school uniform)</em></span>
+        <input type="text" id="tags" placeholder="silver hair, red eyes, school uniform…" />
+      </label>
+
+      <p class="hint" data-param="tags">
+        Describe one character. Anifusion draws six consistent views of them (front, side,
+        back…). Add reference images to keep an existing design.
+      </p>
 
       <p class="hint" data-param="images">
         FLUX 3 decides from the prompt whether to generate or edit. To edit, add an image and
@@ -48,7 +59,7 @@
       </label>
 
       <!-- image-to-image (up to 8 references) -->
-      <div class="field">
+      <div class="field" id="refsField">
         <span>Reference images <em>(optional, up to <span id="maxRefs">8</span>)</em></span>
         <div class="i2i">
           <input type="file" id="input_image" accept="image/*" multiple />
@@ -59,6 +70,48 @@
           in the environment from image 2”</strong>.
         </p>
       </div>
+
+      <!-- Anifusion SDXL models: pose ControlNet -->
+      <div class="field" data-param="controlnets">
+        <span>Pose image <em>(optional)</em></span>
+        <div class="i2i">
+          <input type="file" id="pose_image" accept="image/png,image/jpeg,image/webp" />
+        </div>
+        <div id="poseThumb" class="i2i-thumbs"></div>
+        <div class="grid2" id="poseOptions" hidden>
+          <label class="field">
+            <span>Follow</span>
+            <select id="pose_model">
+              <option value="controlnet-openpose">Body pose (OpenPose)</option>
+              <option value="controlnet-anytest">Sketch / composition (AnyTest)</option>
+            </select>
+          </label>
+          <label class="field slider">
+            <span>Strength <output id="poseStrengthOut">1</output></span>
+            <input type="range" id="pose_strength" min="0" max="2" step="0.05" value="1" />
+          </label>
+        </div>
+        <p class="hint">
+          <strong>Body pose</strong> copies the pose from an OpenPose skeleton or a photo of a
+          person. <strong>Sketch</strong> follows a rough drawing or panel layout.
+        </p>
+      </div>
+
+      <!-- Anifusion: image-to-image source -->
+      <div class="field" data-param="source_image">
+        <span>Redraw an image <em>(optional, image-to-image)</em></span>
+        <div class="i2i">
+          <input type="file" id="source_image" accept="image/png,image/jpeg,image/webp" />
+        </div>
+        <div id="sourceThumb" class="i2i-thumbs"></div>
+        <p class="hint">Restyles or cleans up the image, such as a rough sketch into finished art.
+          Can't be combined with reference or pose images.</p>
+      </div>
+
+      <label class="field slider" data-param="denoise_strength" id="denoiseField" hidden>
+        <span>Change amount <output id="denoiseOut">0.65</output></span>
+        <input type="range" id="denoise_strength" min="0" max="1" step="0.01" value="0.65" />
+      </label>
 
       <!-- FLUX 3: aspect ratio + resolution tier (no width/height) -->
       <div class="grid2" data-param="resolution">
@@ -91,6 +144,8 @@
             <option value="1024x1024">Square · 1024×1024</option>
             <option value="1344x768">Landscape · 1344×768</option>
             <option value="768x1344">Portrait · 768×1344</option>
+            <option value="832x1216">Portrait 2:3 · 832×1216</option>
+            <option value="1216x832">Landscape 3:2 · 1216×832</option>
             <option value="1440x810">Wide 16:9 · 1440×810</option>
             <option value="1152x896">4:3 · 1152×896</option>
             <option value="custom">Custom…</option>
@@ -131,7 +186,7 @@
           <span>Seed <em>(blank = random)</em></span>
           <input type="number" id="seed" placeholder="random" />
         </label>
-        <label class="field">
+        <label class="field" id="countField">
           <span>Number of images</span>
           <select id="count">
             <option value="1">1</option>
@@ -145,6 +200,21 @@
       <label class="field checkbox" data-param="prompt_upsampling">
         <input type="checkbox" id="prompt_upsampling" />
         <span>Prompt upsampling</span>
+      </label>
+
+      <label class="field checkbox" data-param="quality_tags">
+        <input type="checkbox" id="quality_tags" checked />
+        <span>Quality tags <em>(adds Anifusion's quality keywords)</em></span>
+      </label>
+
+      <label class="field checkbox" data-param="lightning">
+        <input type="checkbox" id="lightning" />
+        <span>Lightning <em>(faster, fewer steps)</em></span>
+      </label>
+
+      <label class="field checkbox" data-param="flux_manga_append_style_hint">
+        <input type="checkbox" id="flux_manga_append_style_hint" />
+        <span>Append manga style hint</span>
       </label>
 
       <label class="field checkbox" data-param="grounding">
