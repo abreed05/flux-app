@@ -2,6 +2,8 @@ const $ = (id) => document.getElementById(id);
 
 let MODELS = [];
 let refImages = []; // [{ b64, dataUrl, mp, width, height }] — index order matches "image 1..N" in the prompt
+let poseImage = null;   // Anifusion ControlNet image, same shape
+let sourceImage = null; // Anifusion image-to-image source, same shape
 
 function maxRefImages() {
   return currentModel()?.maxImages ?? 8;
@@ -20,12 +22,24 @@ async function init() {
   }
   const sel = $("model");
   sel.innerHTML = "";
+  // One group per provider; a provider without an API key is marked.
+  const groups = new Map();
   for (const m of MODELS) {
+    let group = groups.get(m.provider);
+    if (!group) {
+      group = document.createElement("optgroup");
+      group.label = m.configured ? m.providerName : `${m.providerName} (no API key)`;
+      groups.set(m.provider, group);
+      sel.appendChild(group);
+    }
     const opt = document.createElement("option");
     opt.value = m.id;
     opt.textContent = m.label;
-    sel.appendChild(opt);
+    group.appendChild(opt);
   }
+  // Start on a model that can actually run.
+  const firstUsable = MODELS.find((m) => m.configured);
+  if (firstUsable) sel.value = firstUsable.id;
   sel.addEventListener("change", onModelChange);
   onModelChange();
 
@@ -56,33 +70,55 @@ function modelSupports(param) {
 // Hide controls the selected model's API doesn't accept (FLUX 3 rejects
 // unknown fields, and drops most FLUX.2 knobs), and show a hint.
 function syncModelCapabilities() {
+  const model = currentModel();
   document.querySelectorAll("[data-param]").forEach((el) => {
     el.classList.toggle("unsupported", !modelSupports(el.dataset.param));
   });
   // The guidance/steps note only makes sense among the FLUX.2 models.
-  $("advHint").hidden = !(modelSupports("width") && !modelSupports("guidance"));
+  $("advHint").hidden = !(model?.provider === "bfl" && modelSupports("width") && !modelSupports("guidance"));
+  $("refsField").hidden = maxRefImages() === 0;
+  $("countField").hidden = !!model?.fixedCount;
+
+  // Guidance and steps ranges differ per model (FLUX.2 1–10, Anifusion 0–12,
+  // LCM/turbo models want low values), so reset them to the model's default.
+  for (const [param, [min, max, def]] of Object.entries(model?.ranges || {})) {
+    const input = $(param);
+    Object.assign(input, { min, max });
+    input.value = def;
+    $(`${param}Out`).textContent = def;
+  }
 
   const max = maxRefImages();
   $("maxRefs").textContent = max;
   if (refImages.length > max) {
-    setStatus(`This model takes up to ${max} reference images — only the first ${max} will be sent.`, true);
+    setStatus(max === 0
+      ? "This model doesn't take reference images, so they won't be sent."
+      : `This model takes up to ${max} reference images — only the first ${max} will be sent.`, true);
   }
 }
 
 // ---- credits badge ------------------------------------------------------
 let creditsTimer = null;
 
+// One badge per configured provider. BFL credits are cents; Anifusion
+// credits are their own unit.
 async function refreshCredits() {
+  let data = {};
   try {
-    const resp = await fetch("/api/credits");
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error);
-    const credits = Number(data.credits) || 0;
-    $("credits").textContent = `⚡ ${credits.toLocaleString()} credits · $${(credits / 100).toFixed(2)}`;
-    $("credits").classList.remove("error");
-  } catch {
-    $("credits").textContent = "credits: unavailable";
-    $("credits").classList.add("error");
+    data = await (await fetch("/api/credits")).json();
+  } catch { /* leave both badges in their error state */ }
+  const badges = {
+    bfl: { el: $("credits"), fmt: (c) => `⚡ ${c.toLocaleString()} credits · $${(c / 100).toFixed(2)}`, name: "credits" },
+    anifusion: { el: $("anifusionCredits"), fmt: (c) => `Anifusion · ${c.toLocaleString()} credits`, name: "Anifusion" },
+  };
+  for (const [id, { el, fmt, name }] of Object.entries(badges)) {
+    const entry = data[id];
+    el.hidden = !entry;
+    if (!entry) continue;
+    const ok = !entry.error;
+    el.textContent = ok ? fmt(Number(entry.credits) || 0) : `${name}: unavailable`;
+    el.title = ok ? el.title : entry.error;
+    el.classList.toggle("error", !ok);
   }
 }
 
@@ -95,13 +131,15 @@ function refreshCreditsSoon() {
 // ---- current output size ----------------------------------------------
 function currentSize() {
   const size = $("size").value;
+  // Anifusion takes 512–1536 per side; BFL 256–4096.
+  const [lo, hi] = currentModel()?.provider === "anifusion" ? [512, 1536] : [256, 4096];
+  const clamp = (v) => Math.min(hi, Math.max(lo, Number(v) || 1024));
   if (size === "custom") {
     // Clamp to the API's valid range; an empty field would otherwise send 0.
-    const clamp = (v) => Math.min(4096, Math.max(256, Number(v) || 1024));
     return { width: clamp($("width").value), height: clamp($("height").value) };
   }
   const [w, h] = size.split("x").map(Number);
-  return { width: w, height: h };
+  return { width: clamp(w), height: clamp(h) };
 }
 
 // ---- live cost estimate ------------------------------------------------
@@ -120,6 +158,11 @@ function perImageCost(p) {
 function updateCost() {
   const model = currentModel();
   if (!model || !model.price) { $("costEstimate").textContent = "—"; return; }
+  if (model.price.anifusion) {
+    // Anifusion quotes each job when it's queued; the bill shows on the result.
+    $("costEstimate").textContent = `quoted by Anifusion · cap ${model.price.maxCredits} cr/job`;
+    return;
+  }
   const n = Number($("count").value);
   const per = perImageCost(model.price);
   const usd = per * n;
@@ -141,6 +184,8 @@ $("resolution").addEventListener("change", updateCost);
 // ---- slider value read-outs -------------------------------------------
 $("guidance").addEventListener("input", (e) => ($("guidanceOut").textContent = e.target.value));
 $("steps").addEventListener("input", (e) => ($("stepsOut").textContent = e.target.value));
+$("pose_strength").addEventListener("input", (e) => ($("poseStrengthOut").textContent = e.target.value));
+$("denoise_strength").addEventListener("input", (e) => ($("denoiseOut").textContent = e.target.value));
 
 // ---- reference images (up to 8 on FLUX.2, 10 on FLUX 3) ---------------------
 function renderRefThumbs() {
@@ -208,6 +253,52 @@ $("input_image").addEventListener("change", async (e) => {
   renderRefThumbs();
   BoxEditor.refsChanged();
   updateCost();
+});
+
+// ---- single-image inputs (Anifusion pose + image-to-image source) -----------
+// Each picker holds at most one image and shows it as a removable thumbnail.
+function singleImagePicker(inputId, thumbId, tagText, onChange) {
+  const render = (ref) => {
+    const box = $(thumbId);
+    box.innerHTML = "";
+    if (!ref) return;
+    const wrap = document.createElement("div");
+    wrap.className = "thumb";
+    const img = new Image();
+    img.src = ref.dataUrl;
+    const tag = document.createElement("span");
+    tag.className = "thumb-tag";
+    tag.textContent = tagText;
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "thumb-remove";
+    rm.textContent = "×";
+    rm.title = "Remove";
+    rm.addEventListener("click", () => { render(null); onChange(null); });
+    wrap.append(img, tag, rm);
+    box.appendChild(wrap);
+  };
+  $(inputId).addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const ref = await readFileAsRef(file);
+      render(ref);
+      onChange(ref);
+    } catch (err) {
+      setStatus(String(err.message || err), true);
+    }
+  });
+}
+
+singleImagePicker("pose_image", "poseThumb", "pose", (ref) => {
+  poseImage = ref;
+  $("poseOptions").hidden = !ref;
+});
+singleImagePicker("source_image", "sourceThumb", "source", (ref) => {
+  sourceImage = ref;
+  $("denoiseField").hidden = !ref;
 });
 
 // ---- run state ------------------------------------------------------------
@@ -555,6 +646,7 @@ function connectEvents() {
 // gated here because FLUX.2 accepts it too, but there width/height win.
 function buildParams() {
   const params = { prompt: $("prompt").value.trim() };
+  if (currentModel()?.provider === "anifusion") return buildAnifusionParams(params);
   if (modelSupports("resolution")) {
     params.aspect_ratio = $("aspect_ratio").value;
     params.resolution = $("resolution").value;
@@ -575,6 +667,45 @@ function buildParams() {
   return params;
 }
 
+// The server keeps only what the model supports and uploads the images.
+function buildAnifusionParams(params) {
+  Object.assign(params, currentSize(), {
+    tags: $("tags").value.trim(),
+    negative_prompt: $("negative_prompt").value.trim(),
+    guidance: Number($("guidance").value),
+    steps: Number($("steps").value),
+    quality_tags: $("quality_tags").checked,
+    lightning: $("lightning").checked,
+    flux_manga_append_style_hint: $("flux_manga_append_style_hint").checked,
+  });
+  const seed = $("seed").value.trim();
+  if (seed !== "") params.seed = Number(seed);
+  if (refImages.length && maxRefImages() > 0) {
+    params.input_images = refImages.slice(0, maxRefImages()).map((r) => r.b64);
+  }
+  if (poseImage && modelSupports("controlnets")) {
+    params.pose_image = poseImage.b64;
+    params.pose_model = $("pose_model").value;
+    params.pose_strength = Number($("pose_strength").value);
+  }
+  if (sourceImage && modelSupports("source_image")) {
+    params.source_image = sourceImage.b64;
+    params.denoise_strength = Number($("denoise_strength").value);
+  }
+  return params;
+}
+
+// Anifusion's image-to-image takes neither references nor ControlNets.
+function validateAnifusion(params) {
+  if (currentModel()?.provider !== "anifusion") return null;
+  if (params.source_image && (params.input_images || params.pose_image)) {
+    return "Image-to-image can't be combined with reference or pose images. Remove one or the other.";
+  }
+  const big = [...refImages, poseImage, sourceImage].find((r) => r && r.b64.length * 0.75 > 10 * 1024 * 1024);
+  if (big) return "Anifusion accepts images up to 10 MiB. Downscale the large one first.";
+  return null;
+}
+
 // Catch FLUX 3 input errors before spending a queue slot on them.
 function validateRefs() {
   if (!modelSupports("images")) return null;
@@ -587,7 +718,7 @@ function validateRefs() {
 
 $("generate").addEventListener("click", async () => {
   const params = buildParams();
-  const n = Number($("count").value);
+  const n = currentModel()?.fixedCount || Number($("count").value);
 
   if (currentModel()?.requiresPrompt && !params.prompt) {
     return setStatus("Enter a prompt — with reference images, describe what to do with them.", true);
@@ -595,9 +726,11 @@ $("generate").addEventListener("click", async () => {
   if (!params.prompt && !refImages.length) {
     return setStatus("Enter a prompt (or add a reference image).", true);
   }
-  const refError = validateRefs() || (modelSupports("images") && BoxEditor.validate());
+  const refError = validateRefs() || validateAnifusion(params) || (modelSupports("images") && BoxEditor.validate());
   if (refError) return setStatus(refError, true);
-  setStatus("Queuing run…");
+  // Anifusion runs upload their images first, which can take a moment.
+  setStatus(currentModel()?.provider === "anifusion" && (refImages.length || poseImage || sourceImage)
+    ? "Uploading images to Anifusion…" : "Queuing run…");
 
   try {
     const resp = await fetch("/api/runs", {

@@ -1,6 +1,8 @@
 # ⚡ FLUX Image Studio
 
-A web app for generating and editing images with the **Black Forest Labs FLUX 3 and FLUX.2 APIs**.
+A web app for generating and editing images with the **Black Forest Labs FLUX 3 and FLUX.2 APIs**,
+plus **[Anifusion](https://anifusion.ai/developers/api/)** anime and manga models for characters,
+poses and character sheets.
 The browser GUI talks to a small Node backend that proxies the API — so your API key
 stays on the server — and generation runs through a **RabbitMQ job queue** consumed by
 worker processes, so you can kick off multiple runs simultaneously and watch them all
@@ -25,6 +27,7 @@ complete live.
     the API reports replaces the estimate
   - The UI hides FLUX.2-only controls (negative prompt, size, seed, steps, guidance,
     output format), because this endpoint rejects unknown fields
+- **Anifusion** (optional second provider, for comics and manga): see [below](#anifusion)
 - FLUX.2: prompt + **negative prompt**
 - **Multi-reference image-to-image**: up to **8 reference images** on FLUX.2 or **10** on FLUX 3,
   referenced by number in the prompt: *“the subject from image 1 in the environment from image 2”*
@@ -90,12 +93,61 @@ npm run worker     # in a second terminal
 Requires **Node 18+**. `AMQP_URL` defaults to `amqp://localhost` and outputs go to
 `./outputs/`.
 
+## Anifusion
+
+Set `ANIFUSION_API_KEY` (from your Anifusion developer settings; the API needs an
+active **Creator or Pro** plan and spends the same credits as the editor) and the
+Anifusion models appear in their own group in the model picker:
+
+| Model | Good for | Extras |
+|---|---|---|
+| Illustrious XL 2, WAI Illustrious v14, NoobAI XL, Animagine XL 4.0, Nova Anime XL, Pony V6 | Anime characters | **Pose image** (ControlNet), up to 4 reference images, image-to-image, negative prompt, steps/guidance, seed, quality tags, Lightning |
+| Flux Dev Manga | Black-and-white manga panels | Image-to-image, manga style hint |
+| Nano Banana Pro / 2 | Keeping a character consistent across scenes | Up to 14 reference images |
+| GPT Image 2 | Prompt-following, text in images | Up to 8 reference images |
+| Character sheet | Six views of one character | Description + tags, up to 14 references |
+
+- **Pose image**: upload an OpenPose skeleton or a photo of someone in the pose
+  (*Body pose*), or a rough sketch or panel layout (*Sketch / composition*, AnyTest).
+  Strength 0–2.
+- **Redraw an image**: image-to-image from a source (e.g. a rough sketch into
+  finished art). *Change amount* is the denoise strength. Anifusion doesn't
+  allow it together with reference or pose images.
+- **Character sheet** runs fill six slots from a single job.
+- Output size is 512–1536 px per side.
+
+How it runs: the api uploads reference, pose and source images to Anifusion once
+per run (`/assets` upload intents) and queues jobs that carry the asset ids. Each
+worker job requests a signed estimate, starts the job with that estimate as the
+`max_credits` ceiling and a fresh `Idempotency-Key`, polls until it finishes, and
+downloads the result before its 5-minute display URL expires. Jobs whose estimate
+is above `ANIFUSION_MAX_CREDITS` (default 200) are refused. The billed credits
+appear on the result, and the top bar gets a second balance badge.
+
+Anifusion allows **2 active generations per account**, so extra jobs wait their turn
+in the worker (re-estimating if they wait more than a few minutes) instead of
+failing. Once Anifusion has accepted a job, a failure is not retried, because it
+already charged credits for it.
+
+The model list is a curated subset of `GET /models`, defined in `lib/anifusion.js`.
+To add a model, copy an entry and check its fields in the
+[OpenAPI spec](https://anifusion.ai/api/v1/openapi.json). Every request schema
+rejects unknown fields. LoRAs, inpainting, upscaling, video and comic pages are in
+the API but not in the app yet.
+
+> The spec documents request bodies but not most response bodies, so the client
+> looks fields up by their likely names (`estimate_id`, `operation_id`,
+> `display_url`…). If a job fails with "no estimate_id" or "no image in the
+> finished operation", the error includes the raw response. Adjust `find(…)`
+> keys in `lib/anifusion.js` to match.
+
 ## Tracing (optional)
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` on the api and workers to export OpenTelemetry
 traces over OTLP/HTTP. Each run is one trace: `flux.run` (the request) →
 `flux.job` (one per image, joined across RabbitMQ via message headers) →
-`bfl.generate` with `bfl.submit` / `bfl.poll` / `bfl.download` children. Spans
+`bfl.generate` with `bfl.submit` / `bfl.poll` / `bfl.download` children (or
+`anifusion.generate` / `anifusion.character_sheet` with poll and download children). Spans
 carry the prompt, model, parameters, seed and estimated cost using the attribute
 names Arize Phoenix and Langfuse understand; reference images are never exported.
 With the variable unset, tracing is off.
